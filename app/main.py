@@ -32,14 +32,6 @@ def get_db():
 
 @app.get("/api/v1/health", tags=["System"], response_model=dict)
 def health_check():
-    """
-    Check if the GAIA Core server is running and healthy.
-    
-    Returns:
-    - status: "healthy" if all systems operational
-    - timestamp: current server time
-    - version: API version
-    """
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
@@ -49,15 +41,6 @@ def health_check():
 
 @app.get("/api/v1/info", tags=["System"], response_model=dict)
 def get_api_info():
-    """
-    Get information about GAIA Core API.
-    
-    Returns:
-    - title: System name
-    - version: API version
-    - description: What this API does
-    - base_url: Base URL for all API endpoints
-    """
     return {
         "title": "GAIA Core",
         "version": "2.0.0",
@@ -77,38 +60,8 @@ def get_api_info():
     response_model=schemas.AgentRegisterResponse,
     tags=["Agent Management"],
     summary="Register a new agent",
-    responses={
-        200: {"description": "Agent registered successfully"},
-        400: {"description": "Invalid agent data"},
-    }
 )
 def register_agent(request: schemas.AgentRegisterRequest, db: Session = Depends(get_db)):
-    """
-    Register a new agent in GAIA Core.
-    
-    The agent will receive a unique UUID that should be stored and reused on subsequent runs.
-    
-    **Request body:**
-    - family: Agent family/type (e.g., "coroot", "zabbix", "prometheus")
-    - hostname: Agent hostname/server name
-    - version: Agent software version
-    
-    **Response:**
-    - uuid: Unique identifier for this agent (SAVE THIS!)
-    
-    **Example:**
-    ```bash
-    curl -X POST http://localhost:8000/api/v1/agent/register \\
-      -H "Content-Type: application/json" \\
-      -d '{
-        "agent": {
-          "family": "coroot",
-          "hostname": "my-server",
-          "version": "v1.0"
-        }
-      }'
-    ```
-    """
     agent = crud.create_agent(
         db,
         family=request.agent.family,
@@ -126,61 +79,30 @@ def register_agent(request: schemas.AgentRegisterRequest, db: Session = Depends(
 )
 def list_agents(
     db: Session = Depends(get_db),
-    family: Optional[str] = Query(None, description="Filter by agent family (e.g., 'coroot')"),
-    hostname: Optional[str] = Query(None, description="Search by hostname (partial match)"),
-    sort_by: Optional[str] = Query("last_seen", description="Sort by: last_seen, created_at, hostname"),
-    order: Optional[str] = Query("desc", description="Sort order: asc or desc"),
-    limit: Optional[int] = Query(100, ge=1, le=1000, description="Max results"),
-    offset: Optional[int] = Query(0, ge=0, description="Skip N results (pagination)"),
+    family: Optional[str] = Query(None),
+    hostname: Optional[str] = Query(None),
+    sort_by: Optional[str] = Query("last_seen"),
+    order: Optional[str] = Query("desc"),
+    limit: Optional[int] = Query(100, ge=1, le=1000),
+    offset: Optional[int] = Query(0, ge=0),
 ):
-    """
-    List all registered agents with optional filtering and pagination.
-    
-    **Query parameters:**
-    - family: Filter by agent family (e.g., ?family=coroot)
-    - hostname: Search by hostname (partial, e.g., ?hostname=server-01)
-    - sort_by: Sort field (last_seen, created_at, hostname)
-    - order: asc or desc
-    - limit: Max results (default 100, max 1000)
-    - offset: Skip N results for pagination
-    
-    **Examples:**
-    ```bash
-    # Get all coroot agents
-    curl "http://localhost:8000/api/v1/agents?family=coroot"
-    
-    # Search by hostname
-    curl "http://localhost:8000/api/v1/agents?hostname=server"
-    
-    # Pagination
-    curl "http://localhost:8000/api/v1/agents?limit=10&offset=0"
-    
-    # Sort by creation date, oldest first
-    curl "http://localhost:8000/api/v1/agents?sort_by=created_at&order=asc"
-    ```
-    """
     query = crud.get_all_agents(db)
-    
-    # Filter by family
+
     if family:
         query = [a for a in query if a.family == family]
-    
-    # Search by hostname
     if hostname:
         query = [a for a in query if hostname.lower() in a.hostname.lower()]
-    
-    # Sort
+
     if sort_by == "hostname":
         query = sorted(query, key=lambda x: x.hostname, reverse=(order == "desc"))
     elif sort_by == "created_at":
         query = sorted(query, key=lambda x: x.created_at, reverse=(order == "desc"))
-    else:  # last_seen
+    else:
         query = sorted(query, key=lambda x: x.last_seen, reverse=(order == "desc"))
-    
-    # Pagination
+
     total = len(query)
     query = query[offset:offset + limit]
-    
+
     return schemas.AgentsListResponse(
         agents=[
             schemas.AgentResponse(
@@ -205,20 +127,6 @@ def list_agents(
     summary="Get agent details",
 )
 def get_agent(agent_uuid: str, db: Session = Depends(get_db)):
-    """
-    Get detailed information about a specific agent.
-    
-    Includes:
-    - Agent metadata (family, hostname, version)
-    - Current status (last_seen, last_applied_version, errors)
-    - Current configuration snapshot
-    - Recent configuration application history
-    
-    **Example:**
-    ```bash
-    curl http://localhost:8000/api/v1/agent/96828b90-855b-4d58-9b8c-1d62b344de41
-    ```
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -256,43 +164,22 @@ def get_agent(agent_uuid: str, db: Session = Depends(get_db)):
     tags=["Agent Management"],
     summary="Delete agent",
     status_code=status.HTTP_204_NO_CONTENT,
-    responses={
-        204: {"description": "Agent deleted successfully"},
-        404: {"description": "Agent not found"},
-    }
 )
 def delete_agent(agent_uuid: str, db: Session = Depends(get_db)):
-    """
-    Delete an agent and all its associated data.
-    
-    **WARNING:** This will delete:
-    - Agent record
-    - All configuration history
-    - All snapshots
-    - All managed file records
-    
-    This action cannot be undone!
-    
-    **Example:**
-    ```bash
-    curl -X DELETE http://localhost:8000/api/v1/agent/96828b90-855b-4d58-9b8c-1d62b344de41
-    ```
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
-
     crud.delete_agent(db, agent)
     return None
 
 
-# ========== CONFIGURATION ==========
+# ========== CONFIGURATION (единичный агент) ==========
 
 @app.post(
     "/api/v1/agent/{agent_uuid}/config",
-    response_model=schemas.ConfigResponse,
+    response_model=schemas.MultiConfigResponse,
     tags=["Configuration"],
-    summary="Set agent configuration",
+    summary="Set agent configuration (single or multiple)",
 )
 def set_agent_config(
     agent_uuid: str,
@@ -300,42 +187,55 @@ def set_agent_config(
     db: Session = Depends(get_db)
 ):
     """
-    Set or update the desired configuration for an agent.
-    
-    Configuration can include:
-    - **file**: Write a file to disk
-    - **cli**: Execute a command
-    - **family**: Optional family specification
-    
-    A new version number is automatically assigned.
-    
-    **Request body example:**
+    Установить конфигурацию для агента.
+
+    Поддерживает два формата:
+
+    **Один конфиг (обратная совместимость):**
     ```json
     {
       "config": {
         "family": "coroot",
-        "file": {
-          "path": "/etc/coroot/config.yaml",
-          "content": "server: localhost\\nport: 8080"
-        },
-        "cli": {
-          "binary": "/usr/bin/docker",
-          "args": "restart coroot-agent"
-        }
+        "file": { "path": "/etc/coroot/config.yaml", "content": "..." },
+        "cli":  { "binary": "/usr/bin/docker", "args": "restart coroot-agent" }
       }
     }
     ```
-    
-    **Response:**
-    - version: New config version number
-    - config: The configuration that was set
+
+    **Несколько конфигов сразу:**
+    ```json
+    {
+      "configs": [
+        {
+          "family": "coroot",
+          "file": { "path": "/etc/coroot/config.yaml", "content": "..." },
+          "cli":  { "binary": "/usr/bin/docker", "args": "restart coroot-agent" }
+        },
+        {
+          "family": "zabbix",
+          "file": { "path": "/etc/zabbix/zabbix_agent.conf", "content": "..." },
+          "cli":  { "binary": "/usr/bin/systemctl", "args": "restart zabbix-agent" }
+        }
+      ]
+    }
+    ```
+
+    Каждый конфиг получает свою версию. Агент применит их последовательно.
     """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
-    config = crud.create_agent_config(db, agent, request.config.model_dump())
-    return schemas.ConfigResponse(config=config.desired_config, version=config.version)
+    payloads = request.get_payloads()
+    if not payloads:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No config or configs provided")
+
+    config = crud.create_agent_configs_bulk(db, agent, [p.model_dump() for p in payloads])
+
+    return schemas.MultiConfigResponse(
+        created=[schemas.ConfigResponse(config=config.desired_config, version=config.version)],
+        total=len(payloads),
+    )
 
 
 @app.get(
@@ -345,11 +245,7 @@ def set_agent_config(
     summary="Get current desired configuration",
 )
 def get_agent_config(agent_uuid: str, db: Session = Depends(get_db)):
-    """
-    Get the current desired configuration for an agent.
-    
-    This is what the agent should be running.
-    """
+    """Получить последний желаемый конфиг. Вызывается агентом при поллинге."""
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -373,11 +269,6 @@ def get_agent_config_by_version(
     version: int,
     db: Session = Depends(get_db)
 ):
-    """
-    Get a specific configuration version and its application history.
-    
-    Shows when this configuration version was applied and whether it succeeded.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -412,14 +303,13 @@ def get_agent_config_by_version(
     response_model=schemas.AgentResponse,
     tags=["Configuration"],
     summary="Report agent status",
-    include_in_schema=False,  # Internal endpoint, not for manual use
+    include_in_schema=False,
 )
 def report_agent_status(
     agent_uuid: str,
     request: schemas.AgentStatusRequest,
     db: Session = Depends(get_db)
 ):
-    """Internal endpoint called by agents to report status. Do not use manually."""
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -428,7 +318,6 @@ def report_agent_status(
         config_version = agent.last_applied_version
         files_info = request.current_snapshot.get("files", {})
 
-    # Достаём desired_content из текущего конфига агента
         latest_config = crud.get_latest_config_by_agent(db, agent)
         desired_file_content = None
         if latest_config and latest_config.desired_config.get("file"):
@@ -487,31 +376,20 @@ def report_agent_status(
     "/api/v1/agent/{agent_uuid}/file",
     response_model=schemas.FileContentResponse,
     tags=["File Management"],
-    summary="Read file content (like 'cat')",
+    summary="Read file content",
 )
 def get_agent_file(
     agent_uuid: str,
     path: str = Query(..., description="File path to read"),
     db: Session = Depends(get_db)
 ):
-    """
-    Read the content of a file on the agent (like 'cat' in terminal).
-    
-    **Example:**
-    ```bash
-    curl "http://localhost:8000/api/v1/agent/96828b90.../file?path=/etc/config.conf"
-    ```
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
     managed_file = crud.get_managed_file(db, agent, path)
     if not managed_file or not managed_file.current_content:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"File '{path}' not found or not tracked"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"File '{path}' not found or not tracked")
 
     content = managed_file.current_content
     return schemas.FileContentResponse(
@@ -526,44 +404,31 @@ def get_agent_file(
     "/api/v1/agent/{agent_uuid}/file-diff",
     response_model=schemas.ManagedFilesDiff,
     tags=["File Management"],
-    summary="View file differences (like 'diff')",
+    summary="View file differences",
 )
 def get_file_diff(
     agent_uuid: str,
     path: str = Query(..., description="File path to compare"),
     db: Session = Depends(get_db)
 ):
-    """
-    View differences between desired and current file content (like 'diff').
-    
-    **Example:**
-    ```bash
-    curl "http://localhost:8000/api/v1/agent/.../file-diff?path=/etc/config.conf"
-    ```
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
     managed_file = crud.get_managed_file(db, agent, path)
     if not managed_file:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"File '{path}' not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"File '{path}' not found")
 
     desired = (managed_file.desired_content or "").splitlines(keepends=True)
     current = (managed_file.current_content or "").splitlines(keepends=True)
-
     diff = list(difflib.unified_diff(desired, current, fromfile="desired", tofile="current", lineterm=""))
-    differences = [line.rstrip() for line in diff]
 
     return schemas.ManagedFilesDiff(
         file_path=path,
         desired_content=managed_file.desired_content,
         current_content=managed_file.current_content,
         is_in_sync=managed_file.is_in_sync,
-        differences=differences,
+        differences=[line.rstrip() for line in diff],
     )
 
 
@@ -574,9 +439,6 @@ def get_file_diff(
     summary="List all managed files",
 )
 def get_agent_managed_files(agent_uuid: str, db: Session = Depends(get_db)):
-    """
-    Get all files managed by GAIA Core on this agent.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -584,13 +446,9 @@ def get_agent_managed_files(agent_uuid: str, db: Session = Depends(get_db)):
     files = crud.get_agent_managed_files(db, agent)
     return [
         schemas.ManagedFileInfo(
-            id=f.id,
-            file_path=f.file_path,
-            desired_content=f.desired_content,
-            current_content=f.current_content,
-            is_in_sync=f.is_in_sync,
-            last_synced_at=f.last_synced_at,
-            last_checked_at=f.last_checked_at,
+            id=f.id, file_path=f.file_path, desired_content=f.desired_content,
+            current_content=f.current_content, is_in_sync=f.is_in_sync,
+            last_synced_at=f.last_synced_at, last_checked_at=f.last_checked_at,
             config_version=f.config_version,
         )
         for f in files
@@ -604,9 +462,6 @@ def get_agent_managed_files(agent_uuid: str, db: Session = Depends(get_db)):
     summary="List out-of-sync files",
 )
 def get_agent_out_of_sync_files(agent_uuid: str, db: Session = Depends(get_db)):
-    """
-    Get files that differ from desired state (drift detection).
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -617,13 +472,9 @@ def get_agent_out_of_sync_files(agent_uuid: str, db: Session = Depends(get_db)):
 
     return [
         schemas.ManagedFileInfo(
-            id=f.id,
-            file_path=f.file_path,
-            desired_content=f.desired_content,
-            current_content=f.current_content,
-            is_in_sync=f.is_in_sync,
-            last_synced_at=f.last_synced_at,
-            last_checked_at=f.last_checked_at,
+            id=f.id, file_path=f.file_path, desired_content=f.desired_content,
+            current_content=f.current_content, is_in_sync=f.is_in_sync,
+            last_synced_at=f.last_synced_at, last_checked_at=f.last_checked_at,
             config_version=f.config_version,
         )
         for f in files
@@ -640,12 +491,9 @@ def get_agent_out_of_sync_files(agent_uuid: str, db: Session = Depends(get_db)):
 )
 def get_agent_history(
     agent_uuid: str,
-    limit: int = Query(50, ge=1, le=1000, description="Max results"),
+    limit: int = Query(50, ge=1, le=1000),
     db: Session = Depends(get_db)
 ):
-    """
-    Get the history of all configuration applications on this agent.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -653,12 +501,8 @@ def get_agent_history(
     history = crud.get_config_history(db, agent, limit=limit)
     return [
         schemas.ConfigHistoryRecord(
-            id=h.id,
-            config_version=h.config_version,
-            applied_at=h.applied_at,
-            success=h.success,
-            error=h.error,
-            applied_by=h.applied_by,
+            id=h.id, config_version=h.config_version, applied_at=h.applied_at,
+            success=h.success, error=h.error, applied_by=h.applied_by,
             duration_seconds=h.duration_seconds,
         )
         for h in history
@@ -673,13 +517,9 @@ def get_agent_history(
 )
 def get_agent_failed_history(
     agent_uuid: str,
-    limit: int = Query(50, ge=1, le=1000, description="Max results"),
+    limit: int = Query(50, ge=1, le=1000),
     db: Session = Depends(get_db)
 ):
-    """
-    Get only the failed configuration applications.
-    Useful for debugging and error analysis.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -687,12 +527,8 @@ def get_agent_failed_history(
     history = crud.get_failed_config_applications(db, agent, limit=limit)
     return [
         schemas.ConfigHistoryRecord(
-            id=h.id,
-            config_version=h.config_version,
-            applied_at=h.applied_at,
-            success=h.success,
-            error=h.error,
-            applied_by=h.applied_by,
+            id=h.id, config_version=h.config_version, applied_at=h.applied_at,
+            success=h.success, error=h.error, applied_by=h.applied_by,
             duration_seconds=h.duration_seconds,
         )
         for h in history
@@ -706,9 +542,6 @@ def get_agent_failed_history(
     summary="Get current agent snapshot",
 )
 def get_agent_current_snapshot(agent_uuid: str, db: Session = Depends(get_db)):
-    """
-    Get the current snapshot of agent state including files, CLI results, and drift status.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -718,12 +551,8 @@ def get_agent_current_snapshot(agent_uuid: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No snapshot found")
 
     return schemas.AgentConfigSnapshotResponse(
-        id=snapshot.id,
-        snapshot=snapshot.snapshot,
-        config_version=snapshot.config_version,
-        captured_at=snapshot.captured_at,
-        has_drift=snapshot.has_drift,
-        drift_summary=snapshot.drift_summary,
+        id=snapshot.id, snapshot=snapshot.snapshot, config_version=snapshot.config_version,
+        captured_at=snapshot.captured_at, has_drift=snapshot.has_drift, drift_summary=snapshot.drift_summary,
     )
 
 
@@ -735,12 +564,9 @@ def get_agent_current_snapshot(agent_uuid: str, db: Session = Depends(get_db)):
 )
 def get_agent_snapshots(
     agent_uuid: str,
-    limit: int = Query(20, ge=1, le=1000, description="Max results"),
+    limit: int = Query(20, ge=1, le=1000),
     db: Session = Depends(get_db)
 ):
-    """
-    Get the history of agent state snapshots.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -748,12 +574,8 @@ def get_agent_snapshots(
     snapshots = crud.get_agent_config_snapshots(db, agent, limit=limit)
     return [
         schemas.AgentConfigSnapshotResponse(
-            id=s.id,
-            snapshot=s.snapshot,
-            config_version=s.config_version,
-            captured_at=s.captured_at,
-            has_drift=s.has_drift,
-            drift_summary=s.drift_summary,
+            id=s.id, snapshot=s.snapshot, config_version=s.config_version,
+            captured_at=s.captured_at, has_drift=s.has_drift, drift_summary=s.drift_summary,
         )
         for s in snapshots
     ]
@@ -766,9 +588,6 @@ def get_agent_snapshots(
     summary="Get snapshots with drift",
 )
 def get_agent_snapshots_with_drift(agent_uuid: str, db: Session = Depends(get_db)):
-    """
-    Get only snapshots where configuration drift was detected.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -776,12 +595,8 @@ def get_agent_snapshots_with_drift(agent_uuid: str, db: Session = Depends(get_db
     snapshots = crud.get_snapshots_with_drift(db, agent)
     return [
         schemas.AgentConfigSnapshotResponse(
-            id=s.id,
-            snapshot=s.snapshot,
-            config_version=s.config_version,
-            captured_at=s.captured_at,
-            has_drift=s.has_drift,
-            drift_summary=s.drift_summary,
+            id=s.id, snapshot=s.snapshot, config_version=s.config_version,
+            captured_at=s.captured_at, has_drift=s.has_drift, drift_summary=s.drift_summary,
         )
         for s in snapshots
     ]
@@ -796,14 +611,6 @@ def get_agent_snapshots_with_drift(agent_uuid: str, db: Session = Depends(get_db
     summary="List agents by family",
 )
 def list_family_agents(family: str, db: Session = Depends(get_db)):
-    """
-    Get all agents that belong to a specific family.
-    
-    **Example:**
-    ```bash
-    curl http://localhost:8000/api/v1/family/coroot/agents
-    ```
-    """
     agents = crud.get_agents_by_family(db, family)
     if not agents:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No agents found for family '{family}'")
@@ -813,14 +620,86 @@ def list_family_agents(family: str, db: Session = Depends(get_db)):
         count=len(agents),
         agents=[
             schemas.AgentResponse(
-                uuid=agent.uuid,
-                family=agent.family,
-                hostname=agent.hostname,
-                version=agent.version,
-                last_seen=agent.last_seen,
+                uuid=agent.uuid, family=agent.family, hostname=agent.hostname,
+                version=agent.version, last_seen=agent.last_seen,
             )
             for agent in agents
         ],
+    )
+
+
+@app.post(
+    "/api/v1/family/{family}/config",
+    response_model=schemas.FamilyConfigPushResponse,
+    tags=["Family Management"],
+    summary="Push config to all agents in a family",
+)
+def push_family_config(
+    family: str,
+    request: schemas.FamilyConfigPushRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Разослать один или несколько конфигов **всем агентам** семейства одним запросом.
+
+    Каждый агент семейства получит одинаковый набор конфигов с новыми версиями.
+    Если на каком-то агенте произошла ошибка — остальные всё равно получат конфиг
+    (best-effort). Ошибки отражаются в поле `results`.
+
+    **Пример:**
+    ```json
+    {
+      "configs": [
+        {
+          "file": { "path": "/etc/coroot/config.yaml", "content": "server: 10.0.0.1" },
+          "cli":  { "binary": "/usr/bin/docker", "args": "restart coroot-agent" }
+        }
+      ]
+    }
+    ```
+
+    ```bash
+    curl -X POST http://localhost:8000/api/v1/family/coroot/config \\
+      -H "Content-Type: application/json" \\
+      -d '{"configs": [{"file": {"path": "/etc/coroot/config.yaml", "content": "..."}}]}'
+    ```
+    """
+    agents = crud.get_agents_by_family(db, family)
+    if not agents:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No agents found for family '{family}'"
+        )
+
+    payloads = [p.model_dump() for p in request.configs]
+
+    results: list[schemas.FamilyConfigPushResult] = []
+    updated = 0
+    failed = 0
+
+    for agent in agents:
+        try:
+            config = crud.create_agent_configs_bulk(db, agent, payloads)
+            results.append(schemas.FamilyConfigPushResult(
+                agent_uuid=agent.uuid,
+                hostname=agent.hostname,
+                versions_created=[config.version],
+            ))
+            updated += 1
+        except Exception as exc:
+            results.append(schemas.FamilyConfigPushResult(
+                agent_uuid=agent.uuid,
+                hostname=agent.hostname,
+                versions_created=[],
+                error=str(exc),
+            ))
+            failed += 1
+
+    return schemas.FamilyConfigPushResponse(
+        family=family,
+        agents_updated=updated,
+        agents_failed=failed,
+        results=results,
     )
 
 
@@ -832,12 +711,9 @@ def list_family_agents(family: str, db: Session = Depends(get_db)):
 )
 def get_family_history(
     family: str,
-    limit: int = Query(100, ge=1, le=1000, description="Max results"),
+    limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db)
 ):
-    """
-    Get the combined configuration application history for all agents in a family.
-    """
     history = crud.get_family_config_history(db, family, limit=limit)
     if not history:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No history found for family '{family}'")
@@ -846,12 +722,8 @@ def get_family_history(
         family=family,
         history=[
             schemas.ConfigHistoryRecord(
-                id=h.id,
-                config_version=h.config_version,
-                applied_at=h.applied_at,
-                success=h.success,
-                error=h.error,
-                applied_by=h.applied_by,
+                id=h.id, config_version=h.config_version, applied_at=h.applied_at,
+                success=h.success, error=h.error, applied_by=h.applied_by,
                 duration_seconds=h.duration_seconds,
             )
             for h in history
@@ -866,11 +738,6 @@ def get_family_history(
     summary="Get family file synchronization status",
 )
 def get_family_files_status(family: str, db: Session = Depends(get_db)):
-    """
-    Get the synchronization status of all managed files across all agents in a family.
-    
-    Useful for monitoring configuration drift across your infrastructure.
-    """
     files = crud.get_family_managed_files_status(db, family)
     if not files:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No managed files found for family '{family}'")
@@ -885,13 +752,9 @@ def get_family_files_status(family: str, db: Session = Depends(get_db)):
         out_of_sync_files=out_of_sync,
         files=[
             schemas.ManagedFileInfo(
-                id=f.id,
-                file_path=f.file_path,
-                desired_content=f.desired_content,
-                current_content=f.current_content,
-                is_in_sync=f.is_in_sync,
-                last_synced_at=f.last_synced_at,
-                last_checked_at=f.last_checked_at,
+                id=f.id, file_path=f.file_path, desired_content=f.desired_content,
+                current_content=f.current_content, is_in_sync=f.is_in_sync,
+                last_synced_at=f.last_synced_at, last_checked_at=f.last_checked_at,
                 config_version=f.config_version,
             )
             for f in files
