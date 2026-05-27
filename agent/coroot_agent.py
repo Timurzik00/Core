@@ -379,13 +379,18 @@ def process_commands(agent_uuid: str):
         params = cmd.get("params", {})
 
         print(f"[agent] processing command {cmd_id} ({cmd_type})")
+        print(f"[agent] DEBUG: available handlers = {list(COMMAND_HANDLERS.keys())}, received type = '{cmd_type}' (type={type(cmd_type).__name__})")
+        
         handler = COMMAND_HANDLERS.get(cmd_type)
         if not handler:
-            submit_command_result(agent_uuid, cmd_id, error=f"unknown command type: {cmd_type}")
+            error_msg = f"unknown command type: {cmd_type}"
+            print(f"[agent] ERROR: {error_msg}")
+            submit_command_result(agent_uuid, cmd_id, error=error_msg)
             continue
 
         try:
             result = handler(params)
+            print(f"[agent] command {cmd_id} completed successfully")
             submit_command_result(agent_uuid, cmd_id, result=result)
         except Exception as exc:
             print(f"[agent] command {cmd_id} failed: {exc}")
