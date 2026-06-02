@@ -38,7 +38,14 @@ def delete_agent(db: Session, agent: models.Agent):
 
 
 def update_agent_last_seen(db: Session, agent: models.Agent):
+    """
+    Обновить last_seen после успешного поллинга агента.
+    Заодно чистим last_error: раз агент только что нас успешно опросил,
+    значит он жив и сеть работает. Если у него сохраняется реальная ошибка
+    применения конфига — она вернётся через ближайший report_status.
+    """
     agent.last_seen = datetime.utcnow()
+    agent.last_error = None
     agent.updated_at = datetime.utcnow()
     db.add(agent)
     db.commit()

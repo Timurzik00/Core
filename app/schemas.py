@@ -153,6 +153,7 @@ class AgentDetailedResponse(BaseModel):
     hostname: str
     version: str
     last_seen: Optional[datetime]
+    created_at: Optional[datetime] = None
     last_applied_version: Optional[int] = None
     last_error: Optional[str] = None
     last_reported_at: Optional[datetime] = None
@@ -355,6 +356,7 @@ class AgentsBulkFamilyUpdate(BaseModel):
 class AgentsBulkResponse(BaseModel):
     updated: int
     not_found: list[str]
+
 
 
 # ========== LIST DIR ==========

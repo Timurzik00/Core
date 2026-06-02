@@ -220,6 +220,7 @@ def get_agent(agent_uuid: str, db: Session = Depends(get_db)):
         hostname=agent.hostname,
         version=agent.version,
         last_seen=agent.last_seen,
+        created_at=agent.created_at,
         last_applied_version=agent.last_applied_version,
         last_error=agent.last_error,
         last_reported_at=agent.last_reported_at,
@@ -1562,6 +1563,7 @@ def rollback_agent_config(agent_uuid: str, version: int, db: Session = Depends(g
     )
 
 
+
 @app.post(
     "/api/v1/agent/{agent_uuid}/exec/list-dir",
     response_model=schemas.ListDirResult,
@@ -1586,7 +1588,6 @@ async def exec_list_dir(
     - `size` — размер в байтах (только для файлов)
     - `modified` — unix timestamp последнего изменения
     """
-    import asyncio
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
