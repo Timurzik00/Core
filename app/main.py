@@ -89,27 +89,6 @@ def get_api_info():
 def register_agent(request: schemas.AgentRegisterRequest, db: Session = Depends(get_db)):
     """
     Зарегистрировать нового агента в GAIA Core.
-
-    Агент получает уникальный UUID, который нужно сохранить — он используется
-    при всех последующих запросах (поллинг конфига, отчёт о статусе).
-
-    **Поля запроса:**
-    - `family` — группа агентов, к которой принадлежит машина (например, `coroot`, `nginx`)
-    - `hostname` — имя хост-машины (агент подставляет автоматически из `/proc/sys/kernel/hostname`)
-    - `version` — версия программного обеспечения агента
-
-    **Пример:**
-    ```json
-    {
-      "agent": {
-        "family": "coroot",
-        "hostname": "server-01.example.com",
-        "version": "v1.0.0"
-      }
-    }
-    ```
-
-    **Ответ:** `uuid` — сохраните его, он понадобится для всех операций с этим агентом.
     """
     agent = crud.create_agent(
         db,
@@ -135,27 +114,6 @@ def list_agents(
     limit: Optional[int] = Query(100, ge=1, le=1000, description="Макс. результатов"),
     offset: Optional[int] = Query(0, ge=0, description="Пропустить N результатов (пагинация)"),
 ):
-    """
-    Список всех зарегистрированных агентов с фильтрацией и пагинацией.
-
-    **Поля ответа:**
-    - `last_seen` — время последнего poll-запроса. Если давно не обновлялось — агент недоступен.
-    - `created_at` — время регистрации агента, не меняется.
-    - `last_applied_version` — последняя успешно применённая версия конфига.
-    - `last_error` — текст последней ошибки при применении конфига (null если всё ок).
-
-    **Примеры:**
-    ```bash
-    # Все агенты семейства coroot
-    GET /api/v1/agents?family=coroot
-
-    # Поиск по имени хоста
-    GET /api/v1/agents?hostname=server-01
-
-    # Пагинация, сортировка по дате регистрации
-    GET /api/v1/agents?sort_by=created_at&order=asc&limit=10&offset=0
-    ```
-    """
     query = crud.get_all_agents(db)
 
     if family:
@@ -198,15 +156,6 @@ def list_agents(
     summary="Get agent details",
 )
 def get_agent(agent_uuid: str, db: Session = Depends(get_db)):
-    """
-    Подробная информация об агенте.
-
-    Включает:
-    - Метаданные агента (family, hostname, version, created_at)
-    - Текущий статус (last_seen, last_applied_version, last_error)
-    - Последний снимок состояния (файлы, результаты CLI)
-    - Последние 10 записей истории применения конфигов
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -247,18 +196,6 @@ def get_agent(agent_uuid: str, db: Session = Depends(get_db)):
     status_code=status.HTTP_204_NO_CONTENT,
 )
 def delete_agent(agent_uuid: str, db: Session = Depends(get_db)):
-    """
-    Удалить агента и все связанные данные.
-
-    **Удаляется безвозвратно:**
-    - Запись агента
-    - Все версии конфигов
-    - Вся история применений
-    - Все снимки состояния
-    - Все записи об управляемых файлах
-
-    После удаления агент при следующем поллинге получит 404 и должен быть перерегистрирован.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -279,48 +216,6 @@ def set_agent_config(
     request: schemas.ConfigRequest,
     db: Session = Depends(get_db)
 ):
-    """
-    Установить конфигурацию для агента.
-
-    Поле `service` — имя сервиса на машине (`coroot`, `nginx`, `zabbix`...).
-    Используется как ключ мёрджа: если сервис уже есть в предыдущей версии — заменяется,
-    если новый — добавляется. Остальные сервисы остаются без изменений.
-    Если `service` не указан — используется значение `"default"`.
-
-    **Один сервис:**
-    ```json
-    {
-      "configs": [
-        {
-          "service": "coroot",
-          "file": { "path": "/etc/coroot/config.yaml", "content": "..." },
-          "cli":  { "binary": "/usr/bin/docker", "args": "restart coroot-agent" }
-        }
-      ]
-    }
-    ```
-
-    **Несколько сервисов сразу:**
-    ```json
-    {
-      "configs": [
-        {
-          "service": "coroot",
-          "file": { "path": "/etc/coroot/config.yaml", "content": "..." },
-          "cli":  { "binary": "/usr/bin/docker", "args": "restart coroot-agent" }
-        },
-        {
-          "service": "nginx",
-          "file": { "path": "/etc/nginx/nginx.conf", "content": "..." },
-          "cli":  { "binary": "/usr/bin/docker", "args": "restart nginx" }
-        }
-      ]
-    }
-    ```
-
-    **Пример мёрджа:** если на агенте уже есть `[coroot, nginx]` и прислать только `[coroot новый]`,
-    результатом будет `[coroot новый, nginx]` — nginx не трогается.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -365,13 +260,6 @@ def get_agent_config(agent_uuid: str, db: Session = Depends(get_db)):
     summary="View current desired config (read-only, no side effects)",
 )
 def view_agent_config(agent_uuid: str, db: Session = Depends(get_db)):
-    """
-    Получить текущий желаемый конфиг агента без побочных эффектов.
-
-    В отличие от внутреннего `GET /config` (который агент дёргает поллингом
-    и который обновляет `last_seen`) — этот эндпоинт чисто read-only.
-    Используется UI для подстановки текущего content в форму пуша.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -394,12 +282,6 @@ def get_agent_config_by_version(
     version: int,
     db: Session = Depends(get_db)
 ):
-    """
-    Получить конкретную версию конфига и историю её применения.
-
-    Полезно для аудита: посмотреть что именно было задеплоено в версии N
-    и успешно ли агент её применил.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -451,20 +333,48 @@ def report_agent_status(
         files_info = request.current_snapshot.get("files", {})
 
         latest_config = crud.get_latest_config_by_agent(db, agent)
-        desired_file_content = None
-        if latest_config and latest_config.desired_config.get("file"):
-            desired_file_content = latest_config.desired_config["file"].get("content")
 
+        # Строим карту path → desired content из ВСЕХ конфигов в desired_config.
+        # Поддерживает оба формата: одиночный {service, file, cli} и мульти {configs: [...]}
+        desired_by_path: dict[str, str] = {}
+        if latest_config:
+            configs_list = crud._extract_configs_list(latest_config.desired_config)
+            for cfg in configs_list:
+                if not isinstance(cfg, dict):
+                    continue
+                file_spec = cfg.get("file")
+                if file_spec and file_spec.get("path"):
+                    desired_by_path[file_spec["path"]] = file_spec.get("content", "")
+
+        # Сохраняем managed_files для всех файлов из снапшота
         for file_path, file_data in files_info.items():
             crud.save_managed_file(
                 db,
                 agent,
                 file_path=file_path,
-                desired_content=desired_file_content,
+                desired_content=desired_by_path.get(file_path),
                 current_content=file_data.get("content"),
                 config_version=config_version,
                 is_in_sync=file_data.get("is_in_sync", False),
             )
+
+        # Для файлов, которые есть в desired, но не в текущем снапшоте
+        # (агент не упомянул их потому что они синхронизированы с предыдущей версии) —
+        # обновляем desired_content, current_content оставляем как было
+        for file_path, desired_content in desired_by_path.items():
+            if file_path in files_info:
+                continue
+            existing = crud.get_managed_file(db, agent, file_path)
+            if existing:
+                crud.save_managed_file(
+                    db,
+                    agent,
+                    file_path=file_path,
+                    desired_content=desired_content,
+                    current_content=existing.current_content,
+                    config_version=config_version,
+                    is_in_sync=existing.is_in_sync,
+                )
 
         crud.save_agent_config_snapshot(
             db,
@@ -513,21 +423,9 @@ def report_agent_status(
 )
 def get_agent_file(
     agent_uuid: str,
-    path: str = Query(..., description="Путь к файлу на агенте, например: /etc/coroot/config.yaml"),
+    path: str = Query(..., description="Путь к файлу на агенте"),
     db: Session = Depends(get_db)
 ):
-    """
-    Прочитать содержимое файла на агенте (аналог `cat`).
-
-    Возвращает последнее известное содержимое файла, которое агент
-    сообщил при применении конфига. Файл должен быть управляемым
-    (т.е. был записан через `file` в конфиге).
-
-    **Пример:**
-    ```
-    GET /api/v1/agent/{uuid}/file?path=/etc/coroot/config.yaml
-    ```
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -556,18 +454,6 @@ def get_file_diff(
     path: str = Query(..., description="Путь к файлу для сравнения"),
     db: Session = Depends(get_db)
 ):
-    """
-    Сравнить желаемое и текущее содержимое файла (аналог `diff`).
-
-    Показывает расхождения между тем, что должно быть на агенте
-    (последний конфиг), и тем, что реально было применено.
-    Если `differences` пустой — файл в синхронизации.
-
-    **Пример:**
-    ```
-    GET /api/v1/agent/{uuid}/file-diff?path=/etc/nginx/nginx.conf
-    ```
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -596,15 +482,6 @@ def get_file_diff(
     summary="List all managed files",
 )
 def get_agent_managed_files(agent_uuid: str, db: Session = Depends(get_db)):
-    """
-    Список всех файлов, которыми управляет GAIA Core на этом агенте.
-
-    Для каждого файла показывает:
-    - `file_path` — путь на хост-машине
-    - `is_in_sync` — совпадает ли текущее содержимое с желаемым
-    - `last_synced_at` — когда последний раз файл был синхронизирован
-    - `config_version` — версия конфига, которая записала этот файл
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -628,14 +505,6 @@ def get_agent_managed_files(agent_uuid: str, db: Session = Depends(get_db)):
     summary="List out-of-sync files",
 )
 def get_agent_out_of_sync_files(agent_uuid: str, db: Session = Depends(get_db)):
-    """
-    Файлы, которые отличаются от желаемого состояния (дрейф конфигурации).
-
-    Возвращает только те файлы, где `is_in_sync = false`.
-    Если все файлы синхронизированы — возвращает 404.
-
-    Используйте для быстрой диагностики: что именно расходится с конфигом.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -668,16 +537,6 @@ def get_agent_history(
     limit: int = Query(50, ge=1, le=1000, description="Макс. записей"),
     db: Session = Depends(get_db)
 ):
-    """
-    История всех применений конфигов на агенте.
-
-    Каждая запись показывает:
-    - `config_version` — какая версия конфига применялась
-    - `applied_at` — когда было применение
-    - `success` — успешно или нет
-    - `error` — текст ошибки (если была)
-    - `applied_by` — кто инициировал: `agent` (автоматически) или `manual`
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -704,12 +563,6 @@ def get_agent_failed_history(
     limit: int = Query(50, ge=1, le=1000, description="Макс. записей"),
     db: Session = Depends(get_db)
 ):
-    """
-    Только неудачные попытки применения конфигов.
-
-    Удобно для быстрой диагностики: не нужно листать всю историю,
-    сразу видны проблемные применения с текстом ошибки.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -732,15 +585,6 @@ def get_agent_failed_history(
     summary="Get current agent snapshot",
 )
 def get_agent_current_snapshot(agent_uuid: str, db: Session = Depends(get_db)):
-    """
-    Последний снимок состояния агента.
-
-    Снимок создаётся после каждого применения конфига и содержит:
-    - Список применённых файлов и их содержимое
-    - Результаты выполненных CLI-команд (exit code, stdout, stderr)
-    - Статус контейнера (если используется Docker)
-    - Флаг `has_drift` — есть ли расхождение с желаемым состоянием
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -766,12 +610,6 @@ def get_agent_snapshots(
     limit: int = Query(20, ge=1, le=1000, description="Макс. снимков"),
     db: Session = Depends(get_db)
 ):
-    """
-    История снимков состояния агента (последние N).
-
-    Позволяет отследить как менялось фактическое состояние агента
-    со временем. Хранится не более 20 последних снимков на агента.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -793,13 +631,6 @@ def get_agent_snapshots(
     summary="Get snapshots with drift",
 )
 def get_agent_snapshots_with_drift(agent_uuid: str, db: Session = Depends(get_db)):
-    """
-    Только снимки, где обнаружен дрейф конфигурации.
-
-    Дрейф — расхождение между желаемым состоянием (конфиг в Core)
-    и фактическим состоянием на машине. Используйте для аудита
-    и расследования инцидентов.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -823,14 +654,6 @@ def get_agent_snapshots_with_drift(agent_uuid: str, db: Session = Depends(get_db
     summary="List agents by family",
 )
 def list_family_agents(family: str, db: Session = Depends(get_db)):
-    """
-    Все агенты, принадлежащие указанной семье.
-
-    **Пример:**
-    ```
-    GET /api/v1/family/coroot/agents
-    ```
-    """
     agents = crud.get_agents_by_family(db, family)
     if not agents:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No agents found for family '{family}'")
@@ -860,32 +683,6 @@ def push_family_config(
     request: schemas.FamilyConfigPushRequest,
     db: Session = Depends(get_db)
 ):
-    """
-    Разослать конфиги **всем агентам** семейства одним запросом.
-
-    Каждый агент получит мёрдж по `service`: существующие сервисы заменятся,
-    новые добавятся, остальные останутся без изменений.
-
-    Работает по принципу best-effort: если на одном агенте ошибка —
-    остальные всё равно получат конфиг. Ошибки видны в поле `results`.
-
-    **Пример — обновить coroot на всех машинах семейства:**
-    ```json
-    {
-      "configs": [
-        {
-          "service": "coroot",
-          "file": { "path": "/etc/coroot/config.yaml", "content": "server: 10.0.0.1" },
-          "cli":  { "binary": "/usr/bin/docker", "args": "restart coroot-agent" }
-        }
-      ]
-    }
-    ```
-
-    **Ответ** содержит список результатов по каждому агенту:
-    - `versions_created` — номер новой версии конфига
-    - `error` — текст ошибки (если не удалось обновить этого агента)
-    """
     agents = crud.get_agents_by_family(db, family)
     if not agents:
         raise HTTPException(
@@ -935,12 +732,6 @@ def get_family_history(
     limit: int = Query(100, ge=1, le=1000, description="Макс. записей"),
     db: Session = Depends(get_db)
 ):
-    """
-    Объединённая история применения конфигов для всех агентов семейства.
-
-    Удобно для общего мониторинга: одним запросом видно что происходило
-    на всех машинах группы, в хронологическом порядке.
-    """
     history = crud.get_family_config_history(db, family, limit=limit)
     if not history:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No history found for family '{family}'")
@@ -965,18 +756,6 @@ def get_family_history(
     summary="Get family file synchronization status",
 )
 def get_family_files_status(family: str, db: Session = Depends(get_db)):
-    """
-    Статус синхронизации файлов по всем агентам семейства.
-
-    Показывает сводку: сколько файлов в синхронизации, сколько нет.
-    Используйте для мониторинга дрейфа конфигурации по всей группе машин.
-
-    **Ответ содержит:**
-    - `total_files` — всего управляемых файлов в семействе
-    - `synced_files` — файлов в синхронизации
-    - `out_of_sync_files` — файлов с дрейфом
-    - `files` — детальный список по каждому файлу каждого агента
-    """
     files = crud.get_family_managed_files_status(db, family)
     if not files:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No managed files found for family '{family}'")
@@ -1030,34 +809,9 @@ def _build_command_response(agent_uuid: str, cmd) -> schemas.CommandResponse:
 async def exec_read_file(
     agent_uuid: str,
     path: str = Query(..., description="Путь к файлу на хост-машине агента"),
-    timeout: int = Query(45, ge=1, le=120, description="Сколько секунд ждать ответа от агента (агент проверяет команды раз в 15 сек, рекомендуется ≥30)"),
+    timeout: int = Query(45, ge=1, le=120, description="Сколько секунд ждать ответа от агента"),
     db: Session = Depends(get_db)
 ):
-    """
-    Прочитать произвольный файл на агенте (live, не из кеша).
-
-    В отличие от `/file`, который возвращает закешированное содержимое
-    управляемых файлов, этот эндпоинт ставит агенту задачу прочитать файл
-    прямо сейчас и ждёт ответа.
-
-    **Как это работает:**
-    1. Core создаёт команду `read_file` в очереди агента
-    2. Агент при следующем поллинге (макс. через `POLL_INTERVAL` сек) забирает её
-    3. Агент читает файл и отправляет содержимое обратно
-    4. Эндпоинт возвращает содержимое (или ошибку timeout)
-
-    **Параметры:**
-    - `path` — абсолютный путь к файлу на машине агента
-    - `timeout` — макс. время ожидания (по умолчанию 30 сек)
-
-    **Пример:**
-    ```
-    GET /api/v1/agent/{uuid}/exec/read-file?path=/etc/nginx/nginx.conf
-    ```
-
-    Если агент недоступен или не успел за timeout — статус `pending` или `running`.
-    Можно повторить запрос через `/commands/{id}` чтобы забрать результат позже.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -1065,7 +819,6 @@ async def exec_read_file(
     cmd = crud.create_agent_command(db, agent, command_type="read_file", params={"path": path})
     cmd_id = cmd.id
 
-    # Long polling: ждём пока агент не выполнит команду
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         await asyncio.sleep(1.0)
@@ -1096,25 +849,6 @@ def create_command(
     request: schemas.CommandRequest,
     db: Session = Depends(get_db)
 ):
-    """
-    Создать произвольную команду в очереди агента.
-
-    Универсальный эндпоинт для постановки команд любого типа.
-    Возвращает сразу, не дожидаясь выполнения. Результат заберите через
-    `GET /commands/{id}` когда статус станет `done` или `failed`.
-
-    **Поддерживаемые команды:**
-    - `read_file` — прочитать файл, params: `{"path": "/some/path"}`
-    - другие типы в будущем
-
-    **Пример:**
-    ```json
-    {
-      "command_type": "read_file",
-      "params": {"path": "/etc/nginx/nginx.conf"}
-    }
-    ```
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -1130,15 +864,6 @@ def create_command(
     summary="Get command status and result",
 )
 def get_command_status(agent_uuid: str, command_id: int, db: Session = Depends(get_db)):
-    """
-    Получить статус и результат команды.
-
-    **Статусы:**
-    - `pending` — команда создана, агент ещё не забрал
-    - `running` — агент забрал, выполняет
-    - `done` — успешно выполнена, результат в поле `result`
-    - `failed` — ошибка, текст в поле `error`
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -1160,7 +885,6 @@ def get_command_status(agent_uuid: str, command_id: int, db: Session = Depends(g
     include_in_schema=False,
 )
 def fetch_pending_commands(agent_uuid: str, db: Session = Depends(get_db)):
-    """Внутренний эндпоинт. Агент забирает свои pending-команды."""
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -1184,7 +908,6 @@ def submit_command_result(
     request: schemas.CommandResultRequest,
     db: Session = Depends(get_db)
 ):
-    """Внутренний эндпоинт. Агент отправляет результат выполнения команды."""
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -1206,12 +929,6 @@ def submit_command_result(
     summary="List all service presets",
 )
 def list_presets(db: Session = Depends(get_db)):
-    """
-    Список всех преднастроенных сервисов.
-
-    Используется фронтом чтобы предзаполнять форму пуша конфига:
-    выбираешь сервис из списка — `file.path` и `cli.*` подставляются автоматически.
-    """
     return crud.list_service_presets(db)
 
 
@@ -1223,24 +940,6 @@ def list_presets(db: Session = Depends(get_db)):
     status_code=status.HTTP_201_CREATED,
 )
 def create_preset(request: schemas.ServicePresetCreate, db: Session = Depends(get_db)):
-    """
-    Создать новый пресет сервиса.
-
-    `service` должен быть уникальным. Все остальные поля опциональны:
-    можно указать только `file_path` (если сервис не требует рестарта)
-    или только `cli_*` (если только команда без файла).
-
-    **Пример:**
-    ```json
-    {
-      "service": "redis",
-      "file_path": "/etc/redis/redis.conf",
-      "cli_binary": "/usr/bin/systemctl",
-      "cli_args": "restart redis",
-      "description": "Redis in-memory store"
-    }
-    ```
-    """
     existing = crud.get_service_preset_by_name(db, request.service)
     if existing:
         raise HTTPException(
@@ -1257,7 +956,6 @@ def create_preset(request: schemas.ServicePresetCreate, db: Session = Depends(ge
     summary="Get service preset by id",
 )
 def get_preset(preset_id: int, db: Session = Depends(get_db)):
-    """Получить пресет по его ID."""
     preset = crud.get_service_preset(db, preset_id)
     if not preset:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset not found")
@@ -1271,12 +969,6 @@ def get_preset(preset_id: int, db: Session = Depends(get_db)):
     summary="Update service preset",
 )
 def update_preset(preset_id: int, request: schemas.ServicePresetUpdate, db: Session = Depends(get_db)):
-    """
-    Обновить пресет.
-
-    Имя `service` менять нельзя — оно служит ключом. Если нужно переименовать —
-    удали старый и создай новый.
-    """
     preset = crud.get_service_preset(db, preset_id)
     if not preset:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset not found")
@@ -1290,11 +982,6 @@ def update_preset(preset_id: int, request: schemas.ServicePresetUpdate, db: Sess
     status_code=status.HTTP_204_NO_CONTENT,
 )
 def delete_preset(preset_id: int, db: Session = Depends(get_db)):
-    """
-    Удалить пресет.
-
-    Удаление пресета не влияет на уже задеплоенные конфиги.
-    """
     preset = crud.get_service_preset(db, preset_id)
     if not preset:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Preset not found")
@@ -1314,16 +1001,6 @@ def list_commands(
     command_type: Optional[str] = Query(None, description="Фильтр по типу команды"),
     db: Session = Depends(get_db),
 ):
-    """
-    Глобальная история ad-hoc команд по всем агентам.
-
-    Используйте для аудита и мониторинга: видно кто что выполнял,
-    сколько команд провалилось, какие зависают в `pending`.
-
-    **Фильтры:**
-    - `status_filter` — pending, running, done, failed
-    - `command_type` — read_file и т.д.
-    """
     cmds = crud.list_all_commands(db, limit=limit, status_filter=status_filter, command_type=command_type)
     return [
         schemas.CommandListItem(
@@ -1356,11 +1033,6 @@ def list_agent_commands_endpoint(
     status_filter: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    """
-    История ad-hoc команд для конкретного агента.
-
-    Включает все команды: pending, running, done, failed.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -1377,20 +1049,10 @@ def list_agent_commands_endpoint(
 )
 def get_global_history(
     limit: int = Query(200, ge=1, le=2000, description="Макс. записей"),
-    success: Optional[bool] = Query(None, description="Фильтр: только успешные (true) или только проваленные (false)"),
+    success: Optional[bool] = Query(None, description="Фильтр"),
     family: Optional[str] = Query(None, description="Фильтр по семье"),
     db: Session = Depends(get_db),
 ):
-    """
-    Объединённая история применения конфигов по всем агентам.
-
-    Удобно для аудита: одной лентой видно что катилось, куда, с каким результатом.
-
-    **Фильтры:**
-    - `success=true` — только успешные применения
-    - `success=false` — только проваленные
-    - `family=coroot` — только агенты конкретной семьи
-    """
     records = crud.list_all_config_history(db, limit=limit, success_filter=success, family=family)
     return [
         schemas.GlobalHistoryRecord(
@@ -1416,12 +1078,6 @@ def get_global_history(
     summary="Rename family",
 )
 def rename_family(family: str, request: schemas.FamilyRenameRequest, db: Session = Depends(get_db)):
-    """
-    Переименовать семью: обновить поле `family` у всех её агентов.
-
-    **Важно:** на агентах в `docker-compose.yml` тоже нужно обновить
-    `AGENT_FAMILY` иначе при следующей регистрации они снова создадутся под старым именем.
-    """
     if family == request.new_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="new_name совпадает со старым")
 
@@ -1444,13 +1100,6 @@ def rename_family(family: str, request: schemas.FamilyRenameRequest, db: Session
     summary="Delete family and all its agents",
 )
 def delete_family(family: str, db: Session = Depends(get_db)):
-    """
-    Удалить семью со всеми агентами.
-
-    **WARNING:** удаляются все агенты, их конфиги, история, снимки, файлы и команды.
-    Действие необратимо. Запущенные на машинах config-agent процессы продолжат
-    работать и при следующем поллинге автоматически перерегистрируются как новые агенты.
-    """
     agents = crud.get_agents_by_family(db, family)
     if not agents:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Family '{family}' not found")
@@ -1474,16 +1123,6 @@ def change_agent_family(
     request: schemas.AgentFamilyUpdateRequest,
     db: Session = Depends(get_db),
 ):
-    """
-    Сменить семью агента.
-
-    **Важно:** на самой машине переменная `AGENT_FAMILY` в docker-compose
-    не меняется автоматически. Если её значение отличается от новой семьи,
-    при рестарте контейнера или потере UUID агент **зарегистрируется заново**
-    под именем из compose. Чтобы это не случилось — обнови AGENT_FAMILY
-    в compose до того что задано здесь, либо вообще убери переменную
-    (тогда агент будет в семье "default").
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -1509,12 +1148,6 @@ def change_agent_family(
     summary="Bulk change family for selected agents",
 )
 def bulk_change_family(request: schemas.AgentsBulkFamilyUpdate, db: Session = Depends(get_db)):
-    """
-    Массовая смена семьи у списка агентов.
-
-    Удобно для миграций: выбрал несколько на странице Agents,
-    нажал "Move to family X" — все переедут.
-    """
     updated, not_found = crud.bulk_update_agents_family(db, request.uuids, request.family)
     return schemas.AgentsBulkResponse(updated=updated, not_found=not_found)
 
@@ -1526,16 +1159,6 @@ def bulk_change_family(request: schemas.AgentsBulkFamilyUpdate, db: Session = De
     summary="Rollback to a previous config version",
 )
 def rollback_agent_config(agent_uuid: str, version: int, db: Session = Depends(get_db)):
-    """
-    Откатить конфиг агента к указанной версии.
-
-    Создаёт **новую** версию (с новым номером), копируя содержимое из старой.
-    Это безопаснее чем "перепрыгивать" назад: история сохраняется,
-    видно когда и куда был откат.
-
-    **Пример:** агент сейчас на v12 с ошибкой, а v10 — последний рабочий.
-    Откат к v10 создаст v13 с тем же содержимым что было в v10.
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -1547,8 +1170,6 @@ def rollback_agent_config(agent_uuid: str, version: int, db: Session = Depends(g
             detail=f"Config version {version} not found",
         )
 
-    # Извлекаем список конфигов из desired_config (он может быть {configs: [...]}
-    # или одиночным конфигом — мёрдж в create_agent_configs_bulk сам разберётся)
     desired = target.desired_config
     if isinstance(desired, dict) and "configs" in desired:
         payloads = list(desired["configs"])
@@ -1576,18 +1197,6 @@ async def exec_list_dir(
     timeout: int = Query(45, ge=1, le=120, description="Сколько секунд ждать ответа от агента"),
     db: Session = Depends(get_db),
 ):
-    """
-    Получить содержимое директории на агенте (live).
-
-    Возвращает список файлов и поддиректорий. По принципу аналогичен `/exec/read-file`:
-    Core ставит команду в очередь, ждёт пока агент её выполнит, возвращает результат.
-
-    **Поля каждой записи:**
-    - `name` — имя файла/папки
-    - `type` — `file` | `dir` | `error` (если нет доступа)
-    - `size` — размер в байтах (только для файлов)
-    - `modified` — unix timestamp последнего изменения
-    """
     agent = crud.get_agent_by_uuid(db, agent_uuid)
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
