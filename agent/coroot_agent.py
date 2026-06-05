@@ -71,12 +71,15 @@ def save_state(state):
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
-def write_file_spec(file_spec):
+def _resolve_host_path(path: str) -> Path:
+    """Преобразовать абсолютный путь хоста в путь внутри контейнера с учётом HOST_FS_ROOT."""
     if HOST_FS_ROOT:
-        path = Path(HOST_FS_ROOT) / file_spec["path"].lstrip("/")
-    else:
-        path = Path(file_spec["path"])
+        return Path(HOST_FS_ROOT) / path.lstrip("/")
+    return Path(path)
 
+
+def write_file_spec(file_spec):
+    path = _resolve_host_path(file_spec["path"])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(file_spec["content"])
     try:
@@ -89,10 +92,7 @@ def write_file_spec(file_spec):
 
 def read_file_content(file_path: str) -> str | None:
     try:
-        if HOST_FS_ROOT:
-            path = Path(HOST_FS_ROOT) / file_path.lstrip("/")
-        else:
-            path = Path(file_path)
+        path = _resolve_host_path(file_path)
         if path.exists() and path.is_file():
             return path.read_text()
     except Exception as e:
@@ -224,6 +224,44 @@ def apply_configs(configs: list[dict], prev_configs: list[dict] | None = None) -
     return all_files, all_cli, skipped
 
 
+def collect_all_files_state(configs: list[dict]) -> dict:
+    """
+    Прочитать с диска фактическое состояние ВСЕХ файлов из desired configs.
+    Используется для построения снапшота: чтобы он отражал состояние всех
+    управляемых файлов, а не только тех, что только что применились.
+    """
+    result: dict = {}
+    for config in configs:
+        if not isinstance(config, dict):
+            continue
+        file_spec = config.get("file")
+        if not file_spec or not file_spec.get("path"):
+            continue
+        path = file_spec["path"]
+        expected = file_spec.get("content", "")
+
+        try:
+            full_path = _resolve_host_path(path)
+            if full_path.exists() and full_path.is_file():
+                current = full_path.read_text(errors="replace")
+                result[path] = {
+                    "content": current,
+                    "is_in_sync": current == expected,
+                }
+            else:
+                result[path] = {
+                    "content": None,
+                    "is_in_sync": False,
+                }
+        except Exception as exc:
+            print(f"[agent] failed to read {path} for snapshot: {exc}")
+            result[path] = {
+                "content": None,
+                "is_in_sync": False,
+            }
+    return result
+
+
 def capture_current_snapshot(applied_files=None, cli_results=None):
     snapshot = {
         "hostname": AGENT_HOSTNAME,
@@ -287,10 +325,7 @@ def cmd_read_file(params: dict) -> dict:
     if not path:
         raise ValueError("path is required")
 
-    if HOST_FS_ROOT:
-        full_path = Path(HOST_FS_ROOT) / path.lstrip("/")
-    else:
-        full_path = Path(path)
+    full_path = _resolve_host_path(path)
 
     if not full_path.exists():
         raise FileNotFoundError(f"File not found: {path}")
@@ -309,10 +344,7 @@ def cmd_list_dir(params: dict) -> dict:
     """
     path = params.get("path") or "/"
 
-    if HOST_FS_ROOT:
-        full_path = Path(HOST_FS_ROOT) / path.lstrip("/")
-    else:
-        full_path = Path(path)
+    full_path = _resolve_host_path(path)
 
     if not full_path.exists():
         raise FileNotFoundError(f"Path not found: {path}")
@@ -412,7 +444,7 @@ def sync_loop(agent_uuid):
             elif version != last_applied_version:
                 print(f"[agent] detected new desired config version {version}, applying {len(configs)} config(s)")
                 try:
-                    all_files, all_cli, skipped = apply_configs(configs, last_applied_configs)
+                    _applied_files, all_cli, skipped = apply_configs(configs, last_applied_configs)
                     last_applied_version = version
                     last_applied_configs = configs
                     state["agent_uuid"] = agent_uuid
@@ -421,7 +453,11 @@ def sync_loop(agent_uuid):
                     state["last_error"] = None
                     save_state(state)
 
-                    snapshot = capture_current_snapshot(all_files, all_cli if all_cli else None)
+                    # Для снапшота собираем СОСТОЯНИЕ ВСЕХ управляемых файлов с диска,
+                    # а не только тех что только что применились. Это даёт полную картину
+                    # для UI и позволяет Core корректно обновлять managed_files.
+                    all_files_state = collect_all_files_state(configs)
+                    snapshot = capture_current_snapshot(all_files_state, all_cli if all_cli else None)
                     report_status(agent_uuid, last_applied_version, None, snapshot)
                 except Exception as exc:
                     error_text = str(exc)
