@@ -53,6 +53,7 @@ def update_agent_last_seen(db: Session, agent: models.Agent):
     return agent
 
 
+
 def update_agent_status(db: Session, agent: models.Agent, last_applied_version: int | None = None, last_error: str | None = None):
     if last_applied_version is not None:
         agent.last_applied_version = last_applied_version
@@ -74,8 +75,6 @@ def create_agent_config(db: Session, agent: models.Agent, desired_config: dict) 
     db.refresh(config)
     return config
 
-
-# ========== MERGE HELPERS ==========
 
 def _normalize_config(config: dict) -> dict:
     """
